@@ -3,6 +3,7 @@ package org.example;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
+import javax.swing.*;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -11,88 +12,117 @@ import java.util.*;
 
 public class App
 {
-    public static void main( String[] args ) throws Exception {
-        String file1 = "C:\\Users\\arsen\\OneDrive\\Рабочий стол\\Origin.xlsx";
-        String file2 = "C:\\Users\\arsen\\OneDrive\\Рабочий стол\\Main.xlsx";
-        String outputFile = "C:\\Users\\arsen\\OneDrive\\Рабочий стол\\work_updated.xlsx";
+    public static void main(String[] args) {
+        try {
+            // --- Выбор файлов ---
+            JFileChooser fc = new JFileChooser();
+            fc.setDialogTitle("Выберите файл ORIGIN (актуальные данные)");
+            if (fc.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) return;
+            File originFile = fc.getSelectedFile();
 
-        // 🔹 Читаем оба файла
-        List<List<String>> workData = readExcel(file1);
-        List<List<String>> mainData = readExcel(file2);
+            fc.setDialogTitle("Выберите файл MAIN (основные данные для обновления)");
+            if (fc.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) return;
+            File mainFile = fc.getSelectedFile();
 
-        // 🔹 Укажи индексы столбцов (0 — первый столбец)
-        int flightCol = 0; // номер рейса
-        int carCol = 1;    // гос номер машины
-        int driverCol = 2; // водитель
+            // --- Читаем оба файла ---
+            List<List<String>> originData = readExcel(originFile);
+            List<List<String>> mainData = readExcel(mainFile);
 
-        // 🔹 Создаём карту рейсов из main.xlsx
-        Map<String, List<String>> mainMap = new HashMap<>();
-        for (List<String> row : mainData) {
-            if (row.size() > flightCol) {
-                String flight = row.get(flightCol).trim();
-                mainMap.put(flight, row);
-            }
-        }
+            // --- Сопоставляем по номеру рейса (A = индекс 0) ---
+            int keyCol = 0;     // рейс
+            int carCol = 1;     // госномер
+            int driverCol = 2;  // водитель
 
-        // 🔹 Обновляем work.xlsx данными из main.xlsx
-        for (List<String> workRow : workData) {
-            if (workRow.size() > flightCol) {
-                String flight = workRow.get(flightCol).trim();
-                if (mainMap.containsKey(flight)) {
-                    List<String> mainRow = mainMap.get(flight);
-
-                    // если госномер или водитель отличаются — обновляем
-                    if (mainRow.size() > carCol && mainRow.size() > driverCol) {
-                        String mainCar = mainRow.get(carCol);
-                        String mainDriver = mainRow.get(driverCol);
-
-                        if (workRow.size() > carCol) workRow.set(carCol, mainCar);
-                        if (workRow.size() > driverCol) workRow.set(driverCol, mainDriver);
-                    }
+            // Индексируем Origin по номеру рейса
+            Map<String, List<String>> originMap = new HashMap<>();
+            for (List<String> row : originData) {
+                if (row.size() > keyCol) {
+                    originMap.put(row.get(keyCol).trim(), row);
                 }
             }
+
+            int updatedCount = 0;
+
+            // --- Сравнение и обновление ---
+            for (List<String> mainRow : mainData) {
+                if (mainRow.size() <= keyCol) continue;
+                String flight = mainRow.get(keyCol).trim();
+
+                if (originMap.containsKey(flight)) {
+                    List<String> originRow = originMap.get(flight);
+
+                    String mainCar = safeGet(mainRow, carCol);
+                    String mainDriver = safeGet(mainRow, driverCol);
+                    String originCar = safeGet(originRow, carCol);
+                    String originDriver = safeGet(originRow, driverCol);
+
+                    boolean changed = false;
+
+                    if (!mainCar.equalsIgnoreCase(originCar)) {
+                        mainRow.set(carCol, originCar);
+                        changed = true;
+                    }
+
+                    if (!mainDriver.equalsIgnoreCase(originDriver)) {
+                        mainRow.set(driverCol, originDriver);
+                        changed = true;
+                    }
+
+                    if (changed) updatedCount++;
+                }
+            }
+
+            // --- Сохраняем результат ---
+            File updatedFile = new File(mainFile.getParentFile(), "Main_updated.xlsx");
+            writeExcel(mainData, updatedFile);
+
+            JOptionPane.showMessageDialog(null,
+                    "Готово!\nОбновлено строк: " + updatedCount +
+                            "\nФайл сохранён: " + updatedFile.getAbsolutePath(),
+                    "Excel Comparator", JOptionPane.INFORMATION_MESSAGE);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(null, "Ошибка: " + e.getMessage());
         }
-
-        // 🔹 Записываем обновлённый файл
-        writeExcel(workData, outputFile);
-
-        System.out.println("✅ Файл обновлён: " + new File(outputFile).getAbsolutePath());
     }
 
-    // === ЧТЕНИЕ ===
-    private static List<List<String>> readExcel(String filePath) throws IOException {
+    // ---- Вспомогательные методы ----
+    private static List<List<String>> readExcel(File file) throws IOException {
         List<List<String>> rows = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(filePath);
-             Workbook workbook = new XSSFWorkbook(fis)) {
-
-            Sheet sheet = workbook.getSheetAt(0);
+        try (FileInputStream fis = new FileInputStream(file);
+             Workbook wb = new XSSFWorkbook(fis)) {
+            Sheet sheet = wb.getSheetAt(0);
             for (Row row : sheet) {
-                List<String> rowData = new ArrayList<>();
-                for (Cell cell : row) {
+                List<String> values = new ArrayList<>();
+                for (int c = 0; c < row.getLastCellNum(); c++) {
+                    Cell cell = row.getCell(c, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                     cell.setCellType(CellType.STRING);
-                    rowData.add(cell.getStringCellValue().trim());
+                    values.add(cell.getStringCellValue().trim());
                 }
-                rows.add(rowData);
+                rows.add(values);
             }
         }
         return rows;
     }
 
-    // === ЗАПИСЬ ===
-    private static void writeExcel(List<List<String>> data, String filePath) throws IOException {
-        try (Workbook workbook = new XSSFWorkbook()) {
-            Sheet sheet = workbook.createSheet("Updated");
+    private static void writeExcel(List<List<String>> data, File file) throws IOException {
+        try (Workbook wb = new XSSFWorkbook()) {
+            Sheet sheet = wb.createSheet("Updated");
             for (int i = 0; i < data.size(); i++) {
                 Row row = sheet.createRow(i);
-                List<String> rowData = data.get(i);
-                for (int j = 0; j < rowData.size(); j++) {
-                    row.createCell(j).setCellValue(rowData.get(j));
+                for (int j = 0; j < data.get(i).size(); j++) {
+                    row.createCell(j).setCellValue(data.get(i).get(j));
                 }
             }
-            try (FileOutputStream fos = new FileOutputStream(filePath)) {
-                workbook.write(fos);
+            try (FileOutputStream fos = new FileOutputStream(file)) {
+                wb.write(fos);
             }
         }
+    }
+
+    private static String safeGet(List<String> row, int idx) {
+        return (idx < row.size()) ? row.get(idx).trim() : "";
     }
 
 }
